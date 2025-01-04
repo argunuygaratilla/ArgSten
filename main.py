@@ -30,13 +30,19 @@ class FileProcessThread(QThread):
         with open(self.file_path, 'rb') as file:
             file_data = file.read()
         
-        with open(self.rar_path, 'rb') as rar_file:
-            rar_data = rar_file.read()
+        with open(self.rar_path, 'rb') as archive_file:
+            archive_data = archive_file.read()
         
-        total_size = len(file_data) + len(rar_data)
+        # Dosya uzantısına göre marker belirle
+        archive_ext = os.path.splitext(self.rar_path)[1].lower()
+        if archive_ext == '.rar':
+            marker = b'RARSTART'
+        else:  # .zip için
+            marker = b'ZIPSTART'
+        
+        total_size = len(file_data) + len(archive_data)
         processed_size = 0
         
-        marker = b'RARSTART'
         with open(self.output_path, 'wb') as output_file:
             # Ana dosyayı yaz
             chunk_size = 1024 * 1024  # 1MB chunks
@@ -50,9 +56,9 @@ class FileProcessThread(QThread):
             # Markeri yaz
             output_file.write(marker)
             
-            # RAR dosyasını yaz
-            for i in range(0, len(rar_data), chunk_size):
-                chunk = rar_data[i:i + chunk_size]
+            # Arşiv dosyasını yaz
+            for i in range(0, len(archive_data), chunk_size):
+                chunk = archive_data[i:i + chunk_size]
                 output_file.write(chunk)
                 processed_size += len(chunk)
                 progress = (processed_size * 100) // total_size
@@ -66,18 +72,35 @@ class FileProcessThread(QThread):
         with open(self.file_path, 'rb') as file:
             data = file.read()
         
-        marker = b'RARSTART'
-        rar_start = data.find(marker)
+        # Her iki marker'ı da kontrol et
+        rar_marker = b'RARSTART'
+        zip_marker = b'ZIPSTART'
         
-        if rar_start == -1:
-            raise Exception("Bu dosyada gizlenmiş RAR bulunamadı!")
+        rar_start = data.find(rar_marker)
+        zip_start = data.find(zip_marker)
         
-        rar_data = data[rar_start + len(marker):]
+        if rar_start != -1:
+            marker = rar_marker
+            archive_start = rar_start
+            archive_type = '.rar'
+        elif zip_start != -1:
+            marker = zip_marker
+            archive_start = zip_start
+            archive_type = '.zip'
+        else:
+            raise Exception("Bu dosyada gizlenmiş arşiv dosyası bulunamadı!")
         
-        with open(self.output_path, 'wb') as rar_file:
-            for i in range(0, len(rar_data), chunk_size):
-                chunk = rar_data[i:i + chunk_size]
-                rar_file.write(chunk)
+        archive_data = data[archive_start + len(marker):]
+        
+        # Çıktı dosyasının uzantısını kontrol et ve gerekirse düzelt
+        output_base, output_ext = os.path.splitext(self.output_path)
+        if output_ext.lower() != archive_type:
+            self.output_path = output_base + archive_type
+        
+        with open(self.output_path, 'wb') as archive_file:
+            for i in range(0, len(archive_data), chunk_size):
+                chunk = archive_data[i:i + chunk_size]
+                archive_file.write(chunk)
                 processed_size += len(chunk)
                 progress = (processed_size * 100) // total_size
                 self.progress.emit(progress)
@@ -115,15 +138,15 @@ class SteganografiUygulamasi(QMainWindow):
         layout.addWidget(self.dosya_tipi_combo)
         
         # Gizleme bölümü
-        gizleme_baslik = QLabel("RAR Dosyasını Gizle")
+        gizleme_baslik = QLabel("Arşiv Dosyasını Gizle (RAR/ZIP)")
         gizleme_baslik.setStyleSheet("font-weight: bold;")
         layout.addWidget(gizleme_baslik)
         
         self.ana_dosya_label = QLabel("Seçilen Dosya: Henüz seçilmedi")
-        self.rar_label = QLabel("Seçilen RAR: Henüz seçilmedi")
+        self.rar_label = QLabel("Seçilen Arşiv: Henüz seçilmedi")
         
         ana_dosya_sec_btn = QPushButton("Dosya Seç")
-        rar_sec_btn = QPushButton("RAR Dosyası Seç")
+        rar_sec_btn = QPushButton("Arşiv Dosyası Seç")
         gizle_btn = QPushButton("Gizle")
         
         layout.addWidget(self.ana_dosya_label)
@@ -138,13 +161,13 @@ class SteganografiUygulamasi(QMainWindow):
         layout.addWidget(ayirici)
         
         # Çıkarma bölümü
-        cikarma_baslik = QLabel("Gizlenmiş RAR Dosyasını Çıkar")
+        cikarma_baslik = QLabel("Gizlenmiş Arşiv Dosyasını Çıkar")
         cikarma_baslik.setStyleSheet("font-weight: bold;")
         layout.addWidget(cikarma_baslik)
         
         self.gizli_dosya_label = QLabel("Seçilen Dosya: Henüz seçilmedi")
         gizli_dosya_sec_btn = QPushButton("Dosya Seç")
-        cikar_btn = QPushButton("RAR'ı Çıkar")
+        cikar_btn = QPushButton("Gizlenmiş Dosyayı Çıkar")
         
         layout.addWidget(self.gizli_dosya_label)
         layout.addWidget(gizli_dosya_sec_btn)
@@ -209,10 +232,11 @@ class SteganografiUygulamasi(QMainWindow):
             self.ana_dosya_label.setText(f"Seçilen Dosya: {dosya}")
 
     def rar_sec(self):
-        dosya, _ = QFileDialog.getOpenFileName(self, "RAR Dosyası Seç", "", "RAR Dosyaları (*.rar)")
+        dosya, _ = QFileDialog.getOpenFileName(self, "Arşiv Dosyası Seç", "", 
+                                             "Arşiv Dosyaları (*.rar *.zip)")
         if dosya:
             self.rar_path = dosya
-            self.rar_label.setText(f"Seçilen RAR: {dosya}")
+            self.rar_label.setText(f"Seçilen Arşiv: {dosya}")
 
     def gizli_dosya_sec(self):
         dosya, _ = QFileDialog.getOpenFileName(self, "Dosya Seç", "", "Tüm Dosyalar (*.jpg *.jpeg *.mp4)")
