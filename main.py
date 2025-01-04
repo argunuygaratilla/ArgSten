@@ -1,7 +1,86 @@
 import sys
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QFileDialog, 
-                           QLabel, QVBoxLayout, QWidget, QMessageBox, QComboBox)
-from PyQt5.QtCore import Qt
+                           QLabel, QVBoxLayout, QWidget, QMessageBox, QComboBox,
+                           QProgressBar)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+import os
+
+class FileProcessThread(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, mode, file_path, rar_path, output_path):
+        super().__init__()
+        self.mode = mode
+        self.file_path = file_path
+        self.rar_path = rar_path
+        self.output_path = output_path
+
+    def run(self):
+        try:
+            if self.mode == "hide":
+                self.hide_rar_in_file()
+            else:
+                self.extract_rar_from_file()
+            self.finished.emit(True, "İşlem başarıyla tamamlandı!")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+    def hide_rar_in_file(self):
+        with open(self.file_path, 'rb') as file:
+            file_data = file.read()
+        
+        with open(self.rar_path, 'rb') as rar_file:
+            rar_data = rar_file.read()
+        
+        total_size = len(file_data) + len(rar_data)
+        processed_size = 0
+        
+        marker = b'RARSTART'
+        with open(self.output_path, 'wb') as output_file:
+            # Ana dosyayı yaz
+            chunk_size = 1024 * 1024  # 1MB chunks
+            for i in range(0, len(file_data), chunk_size):
+                chunk = file_data[i:i + chunk_size]
+                output_file.write(chunk)
+                processed_size += len(chunk)
+                progress = (processed_size * 100) // total_size
+                self.progress.emit(progress)
+            
+            # Markeri yaz
+            output_file.write(marker)
+            
+            # RAR dosyasını yaz
+            for i in range(0, len(rar_data), chunk_size):
+                chunk = rar_data[i:i + chunk_size]
+                output_file.write(chunk)
+                processed_size += len(chunk)
+                progress = (processed_size * 100) // total_size
+                self.progress.emit(progress)
+
+    def extract_rar_from_file(self):
+        total_size = os.path.getsize(self.file_path)
+        processed_size = 0
+        chunk_size = 1024 * 1024  # 1MB chunks
+        
+        with open(self.file_path, 'rb') as file:
+            data = file.read()
+        
+        marker = b'RARSTART'
+        rar_start = data.find(marker)
+        
+        if rar_start == -1:
+            raise Exception("Bu dosyada gizlenmiş RAR bulunamadı!")
+        
+        rar_data = data[rar_start + len(marker):]
+        
+        with open(self.output_path, 'wb') as rar_file:
+            for i in range(0, len(rar_data), chunk_size):
+                chunk = rar_data[i:i + chunk_size]
+                rar_file.write(chunk)
+                processed_size += len(chunk)
+                progress = (processed_size * 100) // total_size
+                self.progress.emit(progress)
 
 class SteganografiUygulamasi(QMainWindow):
     def __init__(self):
@@ -71,6 +150,21 @@ class SteganografiUygulamasi(QMainWindow):
         layout.addWidget(gizli_dosya_sec_btn)
         layout.addWidget(cikar_btn)
         
+        # Progress Bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid grey;
+                border-radius: 5px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+            }
+        """)
+        layout.addWidget(self.progress_bar)
+        
         # Dosya yolları
         self.ana_dosya_path = ""
         self.rar_path = ""
@@ -134,11 +228,13 @@ class SteganografiUygulamasi(QMainWindow):
         dosya_tipi = ".jpg" if self.dosya_tipi_combo.currentText() == "JPEG Dosyası" else ".mp4"
         output_path, _ = QFileDialog.getSaveFileName(self, "Kaydet", "", f"Dosya (*{dosya_tipi})")
         if output_path:
-            try:
-                hide_rar_in_file(self.ana_dosya_path, self.rar_path, output_path)
-                QMessageBox.information(self, "Başarılı", "RAR dosyası başarıyla gizlendi!")
-            except Exception as e:
-                QMessageBox.critical(self, "Hata", f"Bir hata oluştu: {str(e)}")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            
+            self.thread = FileProcessThread("hide", self.ana_dosya_path, self.rar_path, output_path)
+            self.thread.progress.connect(self.update_progress)
+            self.thread.finished.connect(self.process_finished)
+            self.thread.start()
 
     def cikar(self):
         if not self.gizli_dosya_path:
@@ -147,39 +243,23 @@ class SteganografiUygulamasi(QMainWindow):
         
         output_path, _ = QFileDialog.getSaveFileName(self, "RAR'ı Kaydet", "", "RAR Dosyaları (*.rar)")
         if output_path:
-            try:
-                extract_rar_from_file(self.gizli_dosya_path, output_path)
-                QMessageBox.information(self, "Başarılı", "RAR dosyası başarıyla çıkarıldı!")
-            except Exception as e:
-                QMessageBox.critical(self, "Hata", f"Bir hata oluştu: {str(e)}")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            
+            self.thread = FileProcessThread("extract", self.gizli_dosya_path, None, output_path)
+            self.thread.progress.connect(self.update_progress)
+            self.thread.finished.connect(self.process_finished)
+            self.thread.start()
 
-def hide_rar_in_file(file_path, rar_path, output_path):
-    with open(file_path, 'rb') as file:
-        file_data = file.read()
-    
-    with open(rar_path, 'rb') as rar_file:
-        rar_data = rar_file.read()
-    
-    marker = b'RARSTART'
-    combined_data = file_data + marker + rar_data
-    
-    with open(output_path, 'wb') as output_file:
-        output_file.write(combined_data)
+    def update_progress(self, value):
+        self.progress_bar.setValue(value)
 
-def extract_rar_from_file(file_path, output_rar_path):
-    with open(file_path, 'rb') as file:
-        data = file.read()
-    
-    marker = b'RARSTART'
-    rar_start = data.find(marker)
-    
-    if rar_start == -1:
-        raise Exception("Bu dosyada gizlenmiş RAR bulunamadı!")
-    
-    rar_data = data[rar_start + len(marker):]
-    
-    with open(output_rar_path, 'wb') as rar_file:
-        rar_file.write(rar_data)
+    def process_finished(self, success, message):
+        self.progress_bar.setVisible(False)
+        if success:
+            QMessageBox.information(self, "Başarılı", message)
+        else:
+            QMessageBox.critical(self, "Hata", f"Bir hata oluştu: {message}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
