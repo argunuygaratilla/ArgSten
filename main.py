@@ -290,3 +290,4 @@ if __name__ == "__main__":
     pencere = SteganografiUygulamasi()
     pencere.show()
     sys.exit(app.exec_())
+#uygar atilla argun
